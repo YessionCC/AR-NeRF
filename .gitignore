@@ -1,0 +1,12 @@
+/.vscode
+/ckpts/
+/data/
+/logs/
+/results/
+/pts_visual/
+
+__pycache__/
+*.ply
+/insert/data/
+/insert/generate/
+/insert/model_data/
