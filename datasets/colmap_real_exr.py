@@ -12,7 +12,7 @@ from .colmap_utils import \
 from .base import BaseDataset
 
 
-class ColmapExrDataset(BaseDataset):
+class ColmapRealExrDataset(BaseDataset):
     def __init__(self, root_dir, split='train', downsample=1.0, **kwargs):
         super().__init__(root_dir, split, downsample)
 
@@ -48,14 +48,8 @@ class ColmapExrDataset(BaseDataset):
         # Step 2: correct poses
         # read extrinsics (of successfully reconstructed images)
         imdata = read_images_binary(os.path.join(self.root_dir, 'sparse/0/images.bin'))
-        img_names = [imdata[k].name for k in imdata]
-        # train_r_15_3.png -> train/hdr_015.exr
-        img_names_n = []
-        for img_name in img_names:
-          sp_name = img_name.split('_')
-          n_name = '{}_hdr/hdr_{:0>3d}.exr'.format(sp_name[0], int(sp_name[2]))
-          img_names_n.append(n_name)
-        img_names = img_names_n
+        img_names = [os.path.join('exr', imdata[k].name.replace('.jpg', '.exr')) for k in imdata]
+        # IMGXXXX.jpg -> exr/IMGXXXXXX.exr
 
         perm = np.argsort(img_names)
         # read successfully reconstructed images and ignore others
@@ -103,7 +97,7 @@ class ColmapExrDataset(BaseDataset):
             buf = [] # buffer for ray attributes: rgb, etc
 
             img = read_image(img_path, self.img_wh, blend_a=False, exr_file=True)
-            img = torch.FloatTensor(img)
+            img = torch.FloatTensor(img) 
             buf += [img]
             self.rays += [torch.cat(buf, 1)]
 

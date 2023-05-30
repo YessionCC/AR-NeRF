@@ -5,7 +5,12 @@ import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 import open3d as o3d
-import cv2
+import cv2, sys, os
+
+dir_path = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, dir_path)
+
+from tonemapping import *
 
 #torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
@@ -184,8 +189,7 @@ def visualize_SH(sh_coeff, resolution, hdr = False, use_cv = False):
   painter[0:resolution, resolution:resolution*2,:] = rgbs[5].transpose(0,1)
 
   if hdr:
-    painter = painter / (1.0 + painter)
-    painter = torch.pow(painter, 1.0/2.2)
+    painter = tonemapping_simple_torch(painter)
   
   #painter = (painter.cpu().numpy()*255).astype('uint8')
   if use_cv:
@@ -246,8 +250,7 @@ def visualize_env(ray_rgb, resolution, hdr = False, use_cv = False, cv_name = 'e
   painter[0:resolution, resolution:resolution*2,:] = rgbs[3].transpose(0,1)
 
   if hdr:
-    painter = painter / (1+painter)
-    painter = torch.pow(painter, 1.0/2.2)
+    painter = tonemapping_simple_torch(painter)
 
   if use_cv:
     show_im_cv(painter.cpu().numpy(), cv_name)

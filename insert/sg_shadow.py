@@ -9,10 +9,13 @@ torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 class SGShadow:
   def __init__(self, pca_path, grid_size = 20, 
-    ncomponents = 32, vol_range = 4, envH = 128, envW = 128):
-    self.delta_angle_decay_fac = 0.4
+    ncomponents = 32, vol_range = 4, envH = 128, envW = 128,
+    angle_decay_fac = 0.4, shadow_pow_fac = 2, self_shadow_pow_fac = 0.1):
+    self.delta_angle_decay_fac = angle_decay_fac
+    self.delta_shadow_fac = shadow_pow_fac
+    self.delta_self_shadow_fac = self_shadow_pow_fac
     self.vol_range = vol_range
-    self.raw_h_angle = torch.atan(torch.Tensor([1.0/vol_range]))
+    self.raw_h_angle = torch.asin(torch.Tensor([1.0/vol_range]))
     self.ncomponents = ncomponents
     self.envH = envH
     self.envW = envW
@@ -79,7 +82,7 @@ class SGShadow:
     dis = torch.norm(pts, dim = -1, keepdim=True).clip(min = 1)
     pts = pts / dis
 
-    cur_h_angle = torch.atan(1.0/(dis*self.vol_range))
+    cur_h_angle = torch.asin(1.0/(dis*self.vol_range))
     delta_h_angle = self.raw_h_angle - cur_h_angle # px,1
     delta_h_angle *= self.delta_angle_decay_fac
 
@@ -108,7 +111,7 @@ class SGShadow:
     inte_L = self.calc_inte_L(lSGs) #1,3
     factor = torch.abs(inte_L_V / inte_L).clip(0, 1)
     factor = 0.2989 * factor[:,0] + 0.5870 * factor[:,1] + 0.1140*factor[:,2]
-    factor = torch.pow(factor, 8) ############################## WARNING HACK
+    factor = torch.pow(factor, self.delta_shadow_fac) ############################## WARNING HACK
     return factor # px
     #return ssdf[:,0].clip(0,1)
 
@@ -141,7 +144,7 @@ class SGShadow:
     fh_ns = 2 * torch.pi / lSGs[:,3:4] * expTerm # lx,1
 
     decay = torch.abs(fhs / fh_ns.T).clip(0,1).unsqueeze(-1) # px,lx,1
-    decay = torch.pow(decay, 0.2) #
+    decay = torch.pow(decay, self.delta_self_shadow_fac) ############################## WARNING HACK
 
     lSGs_dec = lSGs[:,-3:].unsqueeze(0) # 1,lx,3
     lSGs_dec = lSGs_dec * decay # px,lx,3
@@ -182,6 +185,13 @@ class SGShadow:
   # only for debug
   def _fetch_ssdf_im(self, pt):
     pt = pt.reshape(1,1,1,-1,3)
+    dis = torch.norm(pt).clip(min = 1)
+    pt = pt / dis
+
+    cur_h_angle = torch.atan(1.0/(dis*self.vol_range))
+    delta_h_angle = self.raw_h_angle - cur_h_angle # px,1
+    delta_h_angle *= self.delta_angle_decay_fac
+
     pca32 = F.grid_sample(
       self.coeff_volume, pt, 
       mode='bilinear', padding_mode='border', 
@@ -191,6 +201,8 @@ class SGShadow:
     cps = pca32 @ self.components.reshape(self.ncomponents, -1)
     cps = cps.reshape(self.envH, self.envW)
     ssdf_im = self.mean[0] + cps #128,128
+
+    ssdf_im += delta_h_angle
     return ssdf_im
   # only for debug
   def _deubug(self, pt, lgtDir, scale, model_pos, rot_inv = None):
@@ -212,6 +224,34 @@ class SGShadow:
     show_im(ssdf_im)
 
 
+def ___test():
+  sgs20 = SGShadow('/home/lofr/Projects/Render/objViewer/bin/sg/results/Arma.tar',
+    20, 128, 2, envH = 74, envW = 148, angle_decay_fac=1)
+  sgs40 = SGShadow('/home/lofr/Projects/Render/objViewer/bin/sg/results/msk40/Arma.tar',
+    40, 128, 4, envH = 74, envW = 148, angle_decay_fac=1)
+
+  def show_ct(sgs, tpt):
+    im = sgs._fetch_ssdf_im(tpt).cpu().numpy()
+    x = np.linspace(0,148,148)
+    y = np.linspace(0,74,74)
+    X,Y = np.meshgrid(x, y)
+    plt.figure()
+    plt.rcParams['font.family']='Times New Roman'
+    plt.imshow(im)
+    CS = plt.contour(X, Y, im, levels = 10, cmap = 'bwr')
+    plt.clabel(CS, inline=1, fontsize=10)
+    plt.axis('off')
+    plt.show()
+
+  show_ct(sgs20, torch.Tensor([-0.0, 0., 1.6]))
+  show_ct(sgs40, torch.Tensor([-0.0, 0., 0.8]))
+
+  show_ct(sgs20, torch.Tensor([-0.0, 0., 2.0]))
+  show_ct(sgs40, torch.Tensor([-0.0, 0., 1.0]))
+  #plt.savefig('./ssdf_contour.png', bbox_inches = 'tight', dpi=1200)
+  #show_im(im)
+
+#___test()
   
 
 def __test():

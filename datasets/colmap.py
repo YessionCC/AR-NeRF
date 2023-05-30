@@ -66,8 +66,8 @@ class ColmapDataset(BaseDataset):
         w2c_mats = np.stack(w2c_mats, 0)
         poses = np.linalg.inv(w2c_mats)[perm, :3] # (N_images, 3, 4) cam2world matrices
 
-        img_paths = img_paths[:80]#####
-        poses = poses[:80]######
+        #img_paths = img_paths[:80]#####
+        #poses = poses[:80]######
 
         pts3d = read_points3d_binary(os.path.join(self.root_dir, 'sparse/0/points3D.bin'))
         pts3d = np.array([pts3d[k].xyz for k in pts3d]) # (N, 3)

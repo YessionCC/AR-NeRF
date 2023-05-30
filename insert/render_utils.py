@@ -65,6 +65,10 @@ def GeometrySchlickGGX(NdotV, roughness):
   k = (r*r) / 8.0
   return NdotV / (NdotV * (1.0 - k) + k)
 
+def GeometryBlender(NdotV, roughness):
+  a = roughness**2
+  sqr_alpha_tan_n = a*(1.0/NdotV**2 - 1.0).clip(min=0.0)
+  return 0.5*(torch.sqrt(1.0+sqr_alpha_tan_n)-1.0)
 
 # map: H,W,3
 # samples: x,2,   range(-1, 1)
@@ -348,7 +352,8 @@ def SG_render_core(albedo, metal, rough, normal, vdirs, lSGs, clamp01, self_shad
 
   F0 = get_F0(metal, albedo)
   _F = fresnelSchlick(F0, NdotV)
-  G = GeometrySchlickGGX(NdotV, rough)**2
+  #G = GeometrySchlickGGX(NdotV, rough)**2
+  G = 1.0/(GeometryBlender(NdotV, rough)*2+1)
 
   Moi = _F * G / (4 * NdotL * NdotV + EPS)
 

@@ -7,6 +7,7 @@ import os
 from tqdm import tqdm
 from render_utils import *
 from insert_utils import *
+from tonemapping import *
 
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
@@ -204,8 +205,7 @@ def train_global_env(pts, normal, gt, model_save_path, SH_num, visual_mat = Fals
 
       col = albedo / torch.pi * diff_irradiance
       if hdr_mapping:
-        col = col / (1+col)
-        col = torch.pow(col, 1.0/2.2)
+        col = tonemapping_simple_torch(col)
 
       optimizer.zero_grad()
       loss_c = F.mse_loss(col, gt_batch)
@@ -283,13 +283,11 @@ def train_global_env(pts, normal, gt, model_save_path, SH_num, visual_mat = Fals
       albs.append(albedo.detach().cpu())
       
       wrgb = 1.0 / torch.pi * diff_irradiance
-      wrgb = wrgb / (1+wrgb)
-      wrgb = torch.pow(wrgb, 1.0/2.2)
+      wrgb = tonemapping_simple_torch(wrgb)
       irrs.append(wrgb.detach().cpu())
 
       cols = albedo / torch.pi * diff_irradiance
-      cols = cols / (1+cols)
-      cols = torch.pow(cols, 1.0/2.2)
+      cols = tonemapping_simple_torch(col)
       rgbs.append(cols.detach().cpu())
 
     rgbs = torch.concat(rgbs, 0).cpu().numpy()
@@ -369,13 +367,16 @@ def train_global_env_prec(pts, normal, gt, rgb_shs, opc_shs,
 
       col = albedo / torch.pi * diff_irradiance
       if hdr_mapping:
-        col = col / (1+col)
-        col = torch.pow(col, 1.0/2.2)
+        col = tonemapping_simple_torch(col)
 
       optimizer.zero_grad()
       # use tanh, we focus on shadow, not high light
       # to make looks good, not absolutely precise
-      loss_c = F.mse_loss(torch.tanh(col), torch.tanh(gt_batch))
+      log_loss = lambda x_src, x_dst: (torch.log((0.2935+x_src)/(0.2935+x_dst))*0.7607)**2
+      #raw_loss = lambda x_src, x_dst: ((x_src - x_dst) / (x_src.detach()+1e-3))**2 
+      #loss_c = F.mse_loss(log_loss(col), log_loss(gt_batch))
+      loss_c = torch.mean(log_loss(col, gt_batch))
+
       # albedo smooth loss
       pts_near = (torch.rand_like(pts_batch)*2-1) * mat_smooth_range
       plane_near = torch.sum(pts_near * norm_batch, dim = -1, keepdim=True)*norm_batch
@@ -385,9 +386,14 @@ def train_global_env_prec(pts, normal, gt, rgb_shs, opc_shs,
       albedo_near = torch.sigmoid(out_near)
       loss_mat = mat_smooth_weight * F.mse_loss(albedo, albedo_near)
 
-      loss = loss_c + loss_mat
-      if epoch < iter_num * (0.75):
-        loss += 2*F.mse_loss(global_sh, global_sh.mean(dim=-1, keepdim=True))
+      loss_matless = torch.mean(albedo) * 0.2 ########################## punish material for large value to increase light intensity
+
+      loss = loss_c + loss_mat + loss_matless
+      if epoch < iter_num * (0.8):
+        loss_white = 2
+      else:
+        loss_white = 1
+      loss += loss_white*F.mse_loss(global_sh, global_sh.mean(dim=-1, keepdim=True))
 
       loss.backward()
       optimizer.step()
@@ -446,13 +452,11 @@ def train_global_env_prec(pts, normal, gt, rgb_shs, opc_shs,
       albs.append(albedo.detach().cpu())
       
       wrgb = 1.0 / torch.pi * diff_irradiance
-      wrgb = wrgb / (1+wrgb)
-      wrgb = torch.pow(wrgb, 1.0/2.2)
+      wrgb = tonemapping_simple_torch_gamma(wrgb)
       irrs.append(wrgb.detach().cpu())
 
       cols = albedo / torch.pi * diff_irradiance
-      cols = cols / (1+cols)
-      cols = torch.pow(cols, 1.0/2.2)
+      cols = tonemapping_simple_torch_gamma(cols)
       rgbs.append(cols.detach().cpu())
 
     rgbs = torch.concat(rgbs, 0).cpu().numpy()

@@ -7,7 +7,7 @@ def get_opts():
     parser.add_argument('--root_dir', type=str, required=True,
                         help='root directory of dataset')
     parser.add_argument('--dataset_name', type=str, default='nsvf',
-                        choices=['nerf', 'nsvf', 'colmap', 'colmap_exr', 'myblender', 'nerfpp', 'rtmv'],
+                        choices=['nerf', 'nsvf', 'colmap', 'colmap_exr', 'colmap_real_exr', 'myblender', 'nerfpp', 'rtmv'],
                         help='which dataset to train/test')
     parser.add_argument('--split', type=str, default='train',
                         choices=['train', 'trainval', 'trainvaltest'],
@@ -27,6 +27,13 @@ def get_opts():
                         0 to disable (default), to enable,
                         a good value is 1e-3 for real scene and 1e-2 for synthetic scene
                         ''')
+    parser.add_argument('--depth_loss_w', type=float, default=0,
+                        help='''weight of depth loss (see losses.py),
+                        to reduce floaters near the camera
+                        ''')
+    parser.add_argument('--loss_func', type=str, default='raw',
+                        choices=['raw', 'log', 'tanh'],
+                        help='select loss function for HDR training')
 
     # training options
     parser.add_argument('--batch_size', type=int, default=8192,

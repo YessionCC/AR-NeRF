@@ -58,7 +58,13 @@ class NeRFSystem(LightningModule):
         self.warmup_steps = 256
         self.update_interval = 16
 
-        self.loss = NeRFLoss(lambda_distortion=self.hparams.distortion_loss_w)
+        self.loss = NeRFLoss(
+            epoch = self.hparams.num_epochs, 
+            loss_set = self.hparams.loss_func,
+            grid_scale = self.hparams.scale,
+            lambda_depth = self.hparams.depth_loss_w,
+            lambda_distortion=self.hparams.distortion_loss_w
+        )
         self.train_psnr = PeakSignalNoiseRatio(data_range=1)
         self.val_psnr = PeakSignalNoiseRatio(data_range=1)
         self.val_ssim = StructuralSimilarityIndexMeasure(data_range=1)
@@ -108,6 +114,7 @@ class NeRFSystem(LightningModule):
                   'downsample': self.hparams.downsample}
         if self.hparams.use_EXR and \
             (self.hparams.dataset_name == 'colmap_exr' or \
+            self.hparams.dataset_name == 'colmap_real_exr' or \
             self.hparams.dataset_name == 'myblender'):
             kwargs.update({'use_EXR': True})
         self.train_dataset = dataset(split=self.hparams.split, **kwargs)
@@ -171,7 +178,7 @@ class NeRFSystem(LightningModule):
                                            erode=self.hparams.dataset_name=='colmap')
 
         results = self(batch, split='train')
-        loss_d = self.loss(results, batch)
+        loss_d = self.loss(results, batch, step = self.global_step)
         if self.hparams.use_exposure:
             zero_radiance = torch.zeros(1, 3, device=self.device)
             unit_exposure_rgb = self.model.log_radiance_to_rgb(zero_radiance,

@@ -152,9 +152,7 @@ class NGP(nn.Module):
         if self.use_raw_HDR:
             #rgbs = torch.nn.functional.leaky_relu(rgbs)
             if not kwargs.get('output_radiance', False):
-                rgbs = torch.tanh(rgbs)
-                #rgbs = rgbs / (1.0+rgbs)
-                #rgbs = torch.pow(rgbs, 1.0/2.2)
+                rgbs = F.leaky_relu(rgbs)
             else:
                 rgbs = torch.relu(rgbs) # must not in training 
         elif self.rgb_act == 'None': # rgbs is log-radiance

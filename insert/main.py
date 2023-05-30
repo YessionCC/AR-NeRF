@@ -26,6 +26,7 @@ from server import *
 from shadow_fields import *
 from sg_shadow import *
 from envfit import *
+from tonemapping import *
 import struct
 
 import warnings; warnings.filterwarnings("ignore")
@@ -43,6 +44,7 @@ IRAdobe_path = '/home/lofr/Projects/NeRF/InverseRenderingOfIndoorScene-master/re
 EMLight_path = '/home/lofr/Projects/Light/EMLight-master/RegressionNetwork/'
 global_counter = 0
 dep_adj_final = 0
+smap_save_path = None
 
 class NGP_Insertor():
   def __init__(self, hparams):
@@ -64,7 +66,9 @@ class NGP_Insertor():
             'downsample': hparams.downsample,
             'read_meta': read_meta}
     if hparams.use_EXR and \
-      (hparams.dataset_name == 'colmap_exr' or hparams.dataset_name == 'myblender'):
+      (hparams.dataset_name == 'colmap_exr' \
+        or hparams.dataset_name == 'colmap_real_exr' \
+        or hparams.dataset_name == 'myblender'):
       kwargs.update({'use_EXR': True})
     dataset = dataset_dict[hparams.dataset_name](**kwargs)
 
@@ -95,12 +99,13 @@ class NGP_Insertor():
     self.env_opt = EnvOptim()
 
     os.makedirs(self.gen_path, exist_ok = True)
+    os.makedirs(os.path.join(self.gen_path, 'results'), exist_ok = True)
 
   def set_sf(self, sf_path):
     self.sf = ComplexSF(sf_path, SH_order**2)
   def set_sg_shadow(self, pca_path):
     self.sg_shadow = SGShadow(pca_path, 20, 128, 2, envH = 74, envW = 148)  ####
-    #self.sg_shadow = SGShadow(pca_path, 40, 128, 4, envH = 128, envW = 128)  ####
+    #self.sg_shadow = SGShadow(pca_path, 40, 128, 4, envH = 74, envW = 148)  ####
   
   def render(self, rays_o, rays_d, 
     toCPU = True, toNumpy = True, **kwargs):
@@ -173,8 +178,7 @@ class NGP_Insertor():
       if visualize:
         rrr = rgbs[-1]
         if self.hparams.use_EXR:
-          rrr = rrr/(1+rrr)
-          rrr = torch.pow(rrr, 1.0/2.2)
+          rrr = tonemapping_simple_np(rrr)
         show_im(rrr, False)
         show_im(normals[-1]*0.5+0.5, False)
     self.rgbs = np.stack(rgbs, 0)
@@ -231,8 +235,7 @@ class NGP_Insertor():
     pts = pts[:max_pts_num]
 
     if self.hparams.use_EXR:
-      rgbs = rgbs / (1+rgbs)
-      rgbs = np.power(rgbs, 1.0/2.2)
+      rgbs = tonemapping_simple_np_gamma(rgbs)
 
     save_path = os.path.join(self.gen_path, "pc.ply")
     write2ply(rgbs, pts, save_path)
@@ -479,8 +482,15 @@ class NGP_Insertor():
 
     rays_o = rays_o.reshape_as(rgb)
     rays_d = rays_d.reshape_as(rgb) # H,W,3
+
+    ########## HACK
+    #depth_sur[depth_sur == 0] = 100000
+    #depth_blur = gaussian_blur(depth_sur.permute(2,0,1), (9,9))
+    #depth_sur = depth_blur.permute(1,2,0)
+    ##########
     
     pts = (rays_o + rays_d * depth_sur).reshape(-1, 3)
+    #write2ply(rgb.reshape(-1,3).cpu().numpy(), pts.cpu().numpy(), './ttttt.ply')
     model_rot_inv = kwargs.get("model_rot_inv", None)
     #pts = torch.Tensor([100,0,0]).reshape(-1,3)
     if model_rot_inv is not None:
@@ -491,8 +501,14 @@ class NGP_Insertor():
       smap = self.sg_shadow.calc_shadow_factor(model_r, pts, model_pos, lSGs)
 
     smap = smap.reshape(rgb.shape[0], rgb.shape[1], 1)
+    ########## HACK
+    smap_blur = gaussian_blur(smap.permute(2,0,1), (3,3))
+    smap = smap_blur.permute(1,2,0)
     #show_im(smap*rgb)
-    ######
+    ##########
+    if smap_save_path is not None:
+      csmap = (smap[...,0].cpu().numpy().clip(0,1)*255).astype(np.uint8)
+      cv2.imwrite(smap_save_path, csmap)
     
     # cons = depth_sur.flatten() == 0
     # cons_smap = smap.flatten()[cons]
@@ -659,8 +675,7 @@ class NGP_Insertor():
 
     rgb_final = rgb
     if self.hparams.render_HDR_mapping:
-      rgb_final = rgb_final / (1+rgb_final)
-      rgb_final = torch.pow(rgb_final, 1.0/2.2)
+      rgb_final = tonemapping_simple_torch(rgb_final)
     rgb_final = rgb_final.cpu().numpy()
 
     if full_return:
@@ -693,7 +708,8 @@ class NGP_Server:
       10: self.SG_use_sshadow,
       11: self.CmpMethodsDecoder,
       12: self.RunDecompositionCmpDecoder,
-      13: self.UpdateSaveIndexDecoder
+      13: self.UpdateSaveIndexDecoder,
+      14: self.SGShadowFacsDecoder
     }
     self.cam_pose = None
     self.normal = None
@@ -876,11 +892,16 @@ class NGP_Server:
       self.model_bbox, self.normal, self.depth, sg_res,
       self.cam_pose, self.metal, self.rough, self.albedo, **kwargs)
     
-    render_res = render_res / (1+render_res)
-    render_res = torch.pow(render_res, 1.0/2.2).clip(0,1).cpu().numpy()
-    render_res = cv2.cvtColor((render_res*255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    def toLDR(im):
+      im = tonemapping_simple_torch(im)
+      im = im.clip(0,1).cpu().numpy()
+      im = cv2.cvtColor((im*255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+      return im
+    render_res_t = toLDR(render_res)
+    env_im_t = toLDR(torch.Tensor(env_im))
 
-    msk = np.sum(render_res, axis=-1) != 0
+    render_res = render_res.cpu().numpy()
+    msk = (depth_t > 1e-6).cpu().numpy()
     if depth_info is not None:
       depth_info = cv2.resize(depth_info, (depth_t.shape[1], depth_t.shape[0]))
       
@@ -892,10 +913,10 @@ class NGP_Server:
           msk,
           depth_t.cpu().numpy() < depth_info + dep_adj #### add bias ######################
         )
-        t = np.copy(env_im)
-        t[tm] = render_res[tm]
+        t = np.copy(env_im_t)
+        t[tm] = render_res_t[tm]
         cv2.imshow('depth adjust', t)
-      cv2.imshow('depth adjust', env_im)
+      cv2.imshow('depth adjust', env_im_t)
       cv2.createTrackbar('slider', 'depth adjust', 0, 1000, on_change)
       cv2.waitKey(0)
 
@@ -905,8 +926,9 @@ class NGP_Server:
       )
     
     env_im[msk] = render_res[msk]
+    result_im = toLDR(torch.Tensor(env_im))
     cv2.imwrite(os.path.join(
-      self.insertor.gen_path, 'results', '{}_{}.png'.format(self.save_idx, subfix)), env_im)
+      self.insertor.gen_path, 'results', '{}_{}.png'.format(self.save_idx, subfix)), result_im)
 
   def CmpMethodsDecoder(self, buf):
     ######### IRAdobe method
@@ -915,7 +937,7 @@ class NGP_Server:
       (mb[0][0]+mb[1][0])/2/self.insertor.H, 
       (mb[0][1]+mb[1][1])/2/self.insertor.W
     ]#hw
-    sg_info = np.load(os.path.join(IRAdobe_path, '{}_env_envSGCmp1.npy'.format(self.save_idx)))
+    sg_info = np.load(os.path.join(IRAdobe_path, '{}_env_envSGCmp0.npy'.format(self.save_idx)))#######
     depth_info = np.load(os.path.join(IRAdobe_path, '{}_env_depth1.npy'.format(self.save_idx)))
     sgH, sgW = sg_info.shape[-2], sg_info.shape[-1]
     model_pos_scc[0] = int(model_pos_scc[0]*sgH)
@@ -940,21 +962,27 @@ class NGP_Server:
       kwargs.update({'model_rot_inv': self.model_rot_inv})
     sgIR = torch.Tensor(sg_info[..., model_pos_scc[0], model_pos_scc[1]]) # 12,7
     sgIR = trans_raw_sg(sgIR)
-    #sgIR[:,2] = -sgIR[:,2] ### try inverse Z axis ??
-    show_im_cv(SG2Envmap_forDraw(sgIR, 128, 128).cpu().numpy())
+    sgIR[:,2] = -sgIR[:,2] ### try inverse Z axis ??
+    sgIR[:,0] = -sgIR[:,0] ### try inverse X axis ??
+    sgIR_vis = SG2Envmap_forDraw(sgIR, 128, 128)
+    sgIR_vis = (torch.pow(sgIR_vis/(sgIR_vis+1), 1.0/2.2).clip(0,1)*255).cpu().numpy().astype('uint8')
+    show_im_cv(sgIR_vis, title='IR_SG')
 
     env_im_path = os.path.join(
-      self.insertor.gen_path, 'results', '{}_env.png'.format(self.save_idx))
-    env_im = cv2.imread(env_im_path)
+      self.insertor.gen_path, 'results', '{}_env.exr'.format(self.save_idx))
+    env_im = cv2.imread(env_im_path, cv2.IMREAD_UNCHANGED)
+    env_im = cv2.cvtColor(env_im, cv2.COLOR_RGB2BGR)
     self.CompositeCmpResults(sgIR, env_im, 'IR', depth_info, **kwargs)
 
     ######## EMLight Method
     os.system('cd {}; python3 test_.py {}'.format(EMLight_path, os.path.abspath(env_im_path)))
     sgEM = torch.load(os.path.join(EMLight_path, 'res.tar'))# 
     sgEM = trans_raw_sg(sgEM)
-    show_im_cv(SG2Envmap_forDraw(sgEM, 128, 128).cpu().numpy())
+    sgEM_vis = SG2Envmap_forDraw(sgEM, 128, 128)
+    sgEM_vis = (torch.pow(sgEM_vis/(sgEM_vis+1), 1.0/2.2).clip(0,1)*255).cpu().numpy().astype('uint8')
+    show_im_cv(sgEM_vis, title='EM_SG')
 
-    env_im = cv2.imread(env_im_path)
+    #env_im = cv2.imread(env_im_path)
     self.CompositeCmpResults(sgEM, env_im, 'EM', None, **kwargs)
 
 
@@ -981,6 +1009,9 @@ class NGP_Server:
     cv2.imwrite(
       os.path.join(results_path, '{}_{}.png'.format(self.save_idx, save_prefix)),
       res)
+    cv2.imwrite(
+      os.path.join(results_path, '{}_{}.exr'.format(self.save_idx, save_prefix)),
+      rgb_HDR.cpu().numpy()[...,::-1])
     
     if is_save_infos == 1:
       torch.save({ # save necessary infos
@@ -997,8 +1028,7 @@ class NGP_Server:
     results_path = os.path.join(self.insertor.gen_path, 'results')
 
     def toIm(im):
-      im = im / (1.0+im)
-      im = torch.pow(im, 1.0/2.2)
+      im = tonemapping_simple_torch(im)
       im = (im.clip(0, 1)*255).cpu().numpy().astype(np.uint8)
       im = cv2.cvtColor(im, cv2.COLOR_RGB2BGR)
       return im
@@ -1014,6 +1044,8 @@ class NGP_Server:
     )['obj_render'].reshape(self.insertor.H, self.insertor.W, 3)
     black_mask = torch.sum(obj_render_im, dim=-1) == 0
 
+    env_im = torch.Tensor(cv2.imread(os.path.join(results_path, '{}_env.exr'.format(self.save_idx)), cv2.IMREAD_UNCHANGED))
+    obj_render_im[black_mask] = env_im[black_mask]
     obj_render_im = toIm(obj_render_im)
     obj_render_im[black_mask.cpu().numpy()] = 255
     cv2.imwrite(os.path.join(results_path, '{}_nerf_obj.png'.format(self.save_idx)), obj_render_im)
@@ -1030,8 +1062,11 @@ class NGP_Server:
     # Save object insertion without self-shadow
     self.shadow_mode = True
     sg_use_self_shadow = False
+    global smap_save_path
+    smap_save_path = os.path.join(results_path, '{}_nerf_smap.png'.format(self.save_idx))
     cbuf = struct.pack('i', 0)+'nerf_no_self_shadow'.encode()
     self.Render(cbuf)
+    smap_save_path = None
 
     sg_use_self_shadow = True
 
@@ -1040,7 +1075,7 @@ class NGP_Server:
       gSH = self.insertor.global_SH
       env_opt_iter = self.insertor.env_opt.N_iter
 
-      self.insertor.env_opt.N_iter = 320
+      self.insertor.env_opt.N_iter = 450
       self.insertor.global_SH = None
       # for there is huge light change, sg should be optimized again with more iters
       self.sg = self.insertor.generate_probe(self.model_pos, False, False)
@@ -1067,6 +1102,12 @@ class NGP_Server:
     except:
       print('{} is exist, auto organize close')
     self.save_idx = struct.unpack('i', buf)[0]
+
+  def SGShadowFacsDecoder(self, buf):
+    ins = self.insertor.sg_shadow
+    ins.delta_angle_decay_fac,\
+    ins.delta_shadow_fac,\
+    ins.delta_self_shadow_fac = struct.unpack('fff', buf)
 
 
   def Render(self, buf):
@@ -1115,6 +1156,7 @@ class NGP_Server:
           self.cam_pose, self.sg if use_sg_base else self.sh, 
           self.metal, self.rough, self.albedo, False, **kwargs
         )
+        pass
 
       show_im_cv(rgb)
       #show_im(torch.Tensor(rgb))
@@ -1157,7 +1199,7 @@ if __name__ == '__main__':
   #   insertor.generate_envmaps(512)
   #   insertor.load_or_train_envmaps(1001)
   if not hparams.no_global_SH:
-    insertor.train_global_SH_light(False)
+    insertor.train_global_SH_light(True)
 
   NGP_Server(insertor, False).run()
 
