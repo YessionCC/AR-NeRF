@@ -10,3 +10,6 @@ __pycache__/
 /insert/data/
 /insert/generate/
 /insert/model_data/
+
+/*.png
+/*.jpg
